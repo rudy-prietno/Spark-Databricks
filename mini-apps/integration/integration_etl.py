@@ -13,11 +13,11 @@ from pyspark.sql import functions as F
 
 # Copy the file from DBFS to the local file system
 dbutils.fs.cp(
-    "dbfs:/FileStore/tables/_Confidential__Mekari___Data_Engineer_Senior.xlsx", 
-    "file:/tmp/_Confidential__Mekari___Data_Engineer_Senior.xlsx"
+    "dbfs:/FileStore/tables/Example.xlsx", 
+    "file:/tmp/Example.xlsx"
     )
 
-file_path = "/tmp/_Confidential__Mekari___Data_Engineer_Senior.xlsx"
+file_path = "/tmp/Example.xlsx"
 sheet_name = "Sheet1" 
 
 # Instantiate the DataReader class
