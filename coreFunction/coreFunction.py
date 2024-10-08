@@ -2,6 +2,11 @@
 import os
 import pandas as pd
 
+import psycopg2
+from psycopg2 import sql
+from dotenv import load_dotenv
+from singleton_decorator import singleton
+
 from delta.tables import DeltaTable
 from pyspark.sql import SparkSession
 from pyspark.sql.window import Window
@@ -32,30 +37,110 @@ def convert_to_decimal(value):
     return decimal.Decimal(str(round(value, 2)))
 
 
+class PostgreSQLConnectionError(Exception):
+    """Custom exception for PostgreSQL connection errors."""
+    pass
+
+
+@singleton
+class PostgreSQLConnector:
+    """
+    Singleton class to handle PostgreSQL connections.
+
+    This ensures that only one instance of the connection is created throughout
+    the application lifecycle to save resources.
+    """
+
+    def __init__(self):
+        """Initializes the PostgreSQLConnector by establishing a connection."""
+        self.conn = None
+        self._validate_credentials()
+        self._create_connection()
+
+    def _validate_credentials(self):
+        """
+        Validates the necessary environment variables for PostgreSQL credentials.
+        Raises:
+            PostgreSQLConnectionError: If any required credentials are missing.
+        """
+        required_vars = ['POSTGRES_HOST', 'POSTGRES_DB', 'POSTGRES_USER', 'POSTGRES_PASSWORD', 'POSTGRES_PORT']
+        for var in required_vars:
+            if not os.getenv(var):
+                raise PostgreSQLConnectionError(f"Environment variable {var} is missing.")
+
+    def _create_connection(self):
+        """
+        Establishes the PostgreSQL connection using psycopg2.
+        """
+        try:
+            self.conn = psycopg2.connect(
+                host=os.getenv('POSTGRES_HOST'),
+                database=os.getenv('POSTGRES_DB'),
+                user=os.getenv('POSTGRES_USER'),
+                password=os.getenv('POSTGRES_PASSWORD'),
+                port=os.getenv('POSTGRES_PORT')
+            )
+        except psycopg2.Error as e:
+            raise PostgreSQLConnectionError(f"Error connecting to PostgreSQL: {str(e)}")
+
+    def get_connection(self):
+        """Returns the active PostgreSQL connection."""
+        return self.conn
+        
+
 class DataReader:
     """
-    Class to read Excel files into a Pandas DataFrame.
+    Class to read data from Excel and PostgreSQL.
 
     Attributes:
         file_path (str): Path to the Excel file.
         sheet_name (str): Name of the sheet to read.
+        query (str): SQL query to execute for PostgreSQL.
     """
 
-    def __init__(self, file_path, sheet_name):
-        """Initializes DataReader with the file path and sheet name."""
+    def __init__(self, file_path=None, sheet_name=None, query=None):
+        """Initializes DataReader with optional file path, sheet name, and SQL query."""
         self.file_path = file_path
         self.sheet_name = sheet_name
+        self.query = query
         self.data = None
 
-    def readExcell(self):
+    def read_excel(self):
         """
         Reads the Excel file into a Pandas DataFrame.
+        
         Returns:
             pd.DataFrame: DataFrame containing the data from the Excel file.
         """
-        self.data = pd.read_excel(self.file_path, sheet_name=self.sheet_name)
+        if self.file_path and self.sheet_name:
+            self.data = pd.read_excel(self.file_path, sheet_name=self.sheet_name)
+        else:
+            raise ValueError("Both file_path and sheet_name must be provided.")
         return self.data
-    
+
+    def read_postgresql(self):
+        """
+        Executes a SQL query on PostgreSQL and fetches the results.
+
+        Returns:
+            list: List of tuples representing the query result rows.
+        """
+        if not self.query:
+            raise ValueError("SQL query must be provided.")
+        
+        conn = PostgreSQLConnector().get_connection()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute(self.query)
+            self.data = cursor.fetchall()
+        except psycopg2.Error as e:
+            raise PostgreSQLConnectionError(f"Failed to execute query: {str(e)}")
+        finally:
+            cursor.close()
+
+        return self.data
+        
 
 class DataProfiling:
     """
