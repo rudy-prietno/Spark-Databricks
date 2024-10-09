@@ -2,9 +2,8 @@
 import os
 import pandas as pd
 
+import argparse
 import psycopg2
-from psycopg2 import sql
-from dotenv import load_dotenv
 from singleton_decorator import singleton
 
 from delta.tables import DeltaTable
@@ -29,56 +28,73 @@ except NameError:
     spark = SparkSession.builder \
         .appName("ETL or ELT App") \
         .getOrCreate()
-
-
+    
 def convert_to_decimal(value):
     if pd.isna(value):
         return None
     return decimal.Decimal(str(round(value, 2)))
 
 
+def generate_unique_id(text):
+    """
+    helper for dataQuality to generated unique id (primary key)
+    """
+    try:
+        hash_object = hashlib.sha256(text.encode())
+        unique_id = hash_object.hexdigest()
+        return unique_id
+    except Exception as e:
+        print(f"[ERROR] Failed to generate unique ID: {e}")
+        return None
+
+
 class PostgreSQLConnectionError(Exception):
     """Custom exception for PostgreSQL connection errors."""
     pass
-
 
 @singleton
 class PostgreSQLConnector:
     """
     Singleton class to handle PostgreSQL connections.
-
-    This ensures that only one instance of the connection is created throughout
-    the application lifecycle to save resources.
+    Ensures only one instance of the connection throughout the application lifecycle.
     """
 
-    def __init__(self):
-        """Initializes the PostgreSQLConnector by establishing a connection."""
+    def __init__(self, host, db, user, password, port, sslmode="require"):
+        """
+        Initializes the PostgreSQLConnector with the necessary credentials and SSL mode.
+        """
         self.conn = None
+        self.host = host
+        self.db = db
+        self.user = user
+        self.password = password
+        self.port = port
+        self.sslmode = sslmode  # Use SSL mode for secure connection
         self._validate_credentials()
         self._create_connection()
 
     def _validate_credentials(self):
         """
-        Validates the necessary environment variables for PostgreSQL credentials.
+        Validates the necessary PostgreSQL credentials.
         Raises:
             PostgreSQLConnectionError: If any required credentials are missing.
         """
-        required_vars = ['POSTGRES_HOST', 'POSTGRES_DB', 'POSTGRES_USER', 'POSTGRES_PASSWORD', 'POSTGRES_PORT']
-        for var in required_vars:
-            if not os.getenv(var):
-                raise PostgreSQLConnectionError(f"Environment variable {var} is missing.")
+        if not self.host or not self.db or not self.user or not self.password or not self.port:
+            raise PostgreSQLConnectionError("One or more PostgreSQL credentials are missing.")
 
     def _create_connection(self):
         """
         Establishes the PostgreSQL connection using psycopg2.
+        Includes SSL mode for secure communication.
         """
         try:
             self.conn = psycopg2.connect(
-                host=os.getenv('POSTGRES_HOST'),
-                database=os.getenv('POSTGRES_DB'),
-                user=os.getenv('POSTGRES_USER'),
-                password=os.getenv('POSTGRES_PASSWORD'),
-                port=os.getenv('POSTGRES_PORT')
+                host=self.host,
+                database=self.db,
+                user=self.user,
+                password=self.password,
+                port=self.port,
+                sslmode=self.sslmode  # Enforce secure SSL connections
             )
         except psycopg2.Error as e:
             raise PostgreSQLConnectionError(f"Error connecting to PostgreSQL: {str(e)}")
@@ -86,6 +102,11 @@ class PostgreSQLConnector:
     def get_connection(self):
         """Returns the active PostgreSQL connection."""
         return self.conn
+
+    def close_connection(self):
+        """Closes the PostgreSQL connection."""
+        if self.conn:
+            self.conn.close()
         
 
 class DataReader:
@@ -98,13 +119,15 @@ class DataReader:
         query (str): SQL query to execute for PostgreSQL.
     """
 
-    def __init__(self, file_path=None, sheet_name=None, query=None):
+    def __init__(self, file_path=None, sheet_name=None, query=None, params=None):
         """Initializes DataReader with optional file path, sheet name, and SQL query."""
         self.file_path = file_path
         self.sheet_name = sheet_name
         self.query = query
-        self.data = None
+        self.params = params or ()  # Default to empty tuple if no params
+        self.data = None  # To store the result of the query
 
+    
     def read_excel(self):
         """
         Reads the Excel file into a Pandas DataFrame.
@@ -118,28 +141,36 @@ class DataReader:
             raise ValueError("Both file_path and sheet_name must be provided.")
         return self.data
 
-    def read_postgresql(self):
+    
+    def read_postgresql(self, pg_connector):
         """
-        Executes a SQL query on PostgreSQL and fetches the results.
-
+        Reads data from PostgreSQL using a given PostgreSQLConnector and stores the data.
+        Uses parameterized queries to avoid SQL injection.
+        
+        Parameters:
+        - pg_connector (PostgreSQLConnector): An instance of PostgreSQLConnector to manage the connection.
+        
         Returns:
-            list: List of tuples representing the query result rows.
+        - List of tuples: The query result.
         """
         if not self.query:
             raise ValueError("SQL query must be provided.")
         
-        conn = PostgreSQLConnector().get_connection()
-        cursor = conn.cursor()
+        conn = pg_connector.get_connection()
 
-        try:
-            cursor.execute(self.query)
-            self.data = cursor.fetchall()
-        except psycopg2.Error as e:
-            raise PostgreSQLConnectionError(f"Failed to execute query: {str(e)}")
-        finally:
-            cursor.close()
-
-        return self.data
+        # Use a context manager to ensure the connection and cursor are properly closed
+        with conn.cursor() as cursor:
+            try:
+                # Use parameterized queries to avoid SQL injection
+                cursor.execute(self.query, self.params)
+                self.data = cursor.fetchall()  # Fetch the data and store it in an instance variable
+            except psycopg2.Error as e:
+                raise PostgreSQLConnectionError(f"Failed to execute query: {str(e)}")
+            finally:
+                # Close the connection after the query execution
+                pg_connector.close_connection()
+        
+        return self.data  # Return the data for immediate use
         
 
 class DataProfiling:
@@ -568,19 +599,6 @@ class DataIngestion:
         # Calculate and print the time saved
         time_saved = query_time_before - query_time_after
         print(f"Time saved after optimization: {time_saved:.4f} seconds ({(time_saved / query_time_before) * 100:.2f}% reduction)")
-
-
-def generate_unique_id(text):
-    """
-    helper for dataQuality to generated unique id (primary key)
-    """
-    try:
-        hash_object = hashlib.sha256(text.encode())
-        unique_id = hash_object.hexdigest()
-        return unique_id
-    except Exception as e:
-        print(f"[ERROR] Failed to generate unique ID: {e}")
-        return None
         
 
 class dataQuality:
