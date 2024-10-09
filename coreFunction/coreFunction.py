@@ -2,8 +2,13 @@
 import os
 import pandas as pd
 
-import psycopg2
 from singleton_decorator import singleton
+
+import psycopg2
+
+import mysql.connector
+from mysql.connector import Error
+
 
 from delta.tables import DeltaTable
 from pyspark.sql import SparkSession
@@ -106,7 +111,64 @@ class PostgreSQLConnector:
         """Closes the PostgreSQL connection."""
         if self.conn:
             self.conn.close()
-        
+
+
+@singleton
+class MySQLConnector:
+    """
+    Singleton class to handle MySQL connections.
+    Ensures only one instance of the connection is used throughout the application lifecycle.
+    """
+    
+    def __init__(self, host, db, user, password, port=3306):
+        """
+        Initializes the MySQLConnector with the necessary credentials.
+        """
+        self.conn = None
+        self.host = host
+        self.db = db
+        self.user = user
+        self.password = password
+        self.port = port
+        self._validate_credentials()
+        self._create_connection()
+
+    def _validate_credentials(self):
+        """
+        Validates the necessary MySQL credentials.
+        Raises:
+            ValueError: If any required credentials are missing.
+        """
+        if not self.host or not self.db or not self.user or not self.password or not self.port:
+            raise ValueError("One or more MySQL credentials are missing.")
+
+    def _create_connection(self):
+        """
+        Establishes the MySQL connection using mysql.connector.
+        """
+        try:
+            self.conn = mysql.connector.connect(
+                host=self.host,
+                database=self.db,
+                user=self.user,
+                password=self.password,
+                port=self.port
+            )
+            if self.conn.is_connected():
+                print("Successfully connected to MySQL")
+        except Error as e:
+            raise Exception(f"Error connecting to MySQL: {str(e)}")
+
+    def get_connection(self):
+        """Returns the active MySQL connection."""
+        return self.conn
+
+    def close_connection(self):
+        """Closes the MySQL connection."""
+        if self.conn and self.conn.is_connected():
+            self.conn.close()
+            print("MySQL connection closed")
+
 
 class DataReader:
     """
@@ -168,6 +230,32 @@ class DataReader:
             finally:
                 # Close the connection after the query execution
                 pg_connector.close_connection()
+        
+        return self.data  # Return the data for immediate use
+
+    
+    def read_mysql(self, mysql_connector):
+        """
+        Reads data from MySQL using a given MySQLConnector and stores the data.
+        Uses parameterized queries to avoid SQL injection.
+        
+        Parameters:
+        - mysql_connector (MySQLConnector): An instance of MySQLConnector to manage the connection.
+        
+        Returns:
+        - List of tuples: The query result.
+        """
+        conn = mysql_connector.get_connection()
+
+        try:
+            cursor = conn.cursor()
+            cursor.execute(self.query, self.params)
+            self.data = cursor.fetchall()  # Fetch the data and store it in an instance variable
+        except Error as e:
+            raise Exception(f"Failed to execute query: {str(e)}")
+        finally:
+            # Close the connection after the query execution
+            mysql_connector.close_connection()
         
         return self.data  # Return the data for immediate use
         
