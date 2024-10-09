@@ -118,5 +118,5 @@ coreFunction.dataQuality.generate_data_quality_report(
             process= 'xlsx_to_bronze',
             etlType= 'integration',
             dataFormat= 'xlsx',
-            file_path= '/tmp/_Confidential__Mekari___Data_Engineer_Senior.xlsx'
+            file_path= '/tmp/Example.xlsx'
         )
