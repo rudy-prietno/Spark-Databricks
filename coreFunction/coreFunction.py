@@ -9,6 +9,7 @@ import psycopg2
 import mysql.connector
 from mysql.connector import Error
 
+import pymssql
 
 from delta.tables import DeltaTable
 from pyspark.sql import SparkSession
@@ -170,6 +171,62 @@ class MySQLConnector:
             print("MySQL connection closed")
 
 
+@singleton
+class SQLServerConnector:
+    """
+    Singleton class to handle SQL Server connections using pymssql.
+    Ensures only one instance of the connection is used throughout the application lifecycle.
+    """
+
+    def __init__(self, host, db, user, password, port=1433):
+        """
+        Initializes the SQLServerConnector with the necessary credentials.
+        """
+        self.conn = None
+        self.host = host
+        self.db = db
+        self.user = user
+        self.password = password
+        self.port = port
+        self._validate_credentials()
+        self._create_connection()
+
+    def _validate_credentials(self):
+        """
+        Validates the necessary SQL Server credentials.
+        Raises:
+            ValueError: If any required credentials are missing.
+        """
+        if not self.host or not self.db or not self.user or not self.password or not self.port:
+            raise ValueError("One or more SQL Server credentials are missing.")
+
+    def _create_connection(self):
+        """
+        Establishes the SQL Server connection using pymssql.
+        """
+        try:
+            self.conn = pymssql.connect(
+                server=self.host,
+                user=self.user,
+                password=self.password,
+                database=self.db,
+                port=self.port
+            )
+            print("Successfully connected to SQL Server")
+        except pymssql.Error as e:
+            raise Exception(f"Error connecting to SQL Server: {str(e)}")
+
+    def get_connection(self):
+        """Returns the active SQL Server connection."""
+        return self.conn
+
+    def close_connection(self):
+        """Closes the SQL Server connection."""
+        if self.conn:
+            self.conn.close()
+            print("SQL Server connection closed")
+            
+
 class DataReader:
     """
     Class to read data from Excel and PostgreSQL.
@@ -259,6 +316,32 @@ class DataReader:
         
         return self.data  # Return the data for immediate use
         
+        
+    def read_sqlserver(self, sqlserver_connector):
+        """
+        Reads data from SQL Server using a given SQLServerConnector and stores the data.
+        Uses parameterized queries to avoid SQL injection.
+        
+        Parameters:
+        - sqlserver_connector (SQLServerConnector): An instance of SQLServerConnector to manage the connection.
+        
+        Returns:
+        - List of tuples: The query result.
+        """
+        conn = sqlserver_connector.get_connection()
+
+        try:
+            cursor = conn.cursor()
+            cursor.execute(self.query, self.params)
+            self.data = cursor.fetchall()  # Fetch the data and store it in an instance variable
+        except pymssql.Error as e:
+            raise Exception(f"Failed to execute query: {str(e)}")
+        finally:
+            # Close the connection after the query execution
+            sqlserver_connector.close_connection()
+        
+        return self.data  # Return the data for immediate use
+
 
 class DataProfiling:
     """
