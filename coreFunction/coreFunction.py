@@ -2,7 +2,6 @@
 import os
 import pandas as pd
 
-import argparse
 import psycopg2
 from singleton_decorator import singleton
 
