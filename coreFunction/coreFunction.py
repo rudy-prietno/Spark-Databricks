@@ -9,6 +9,7 @@ from mysql.connector import Error
 
 import pymssql
 
+import threading
 import pymongo
 from pymongo.errors import ConnectionFailure
 
@@ -353,13 +354,14 @@ class MongoDBConnectionError(Exception):
     """Custom exception for MongoDB connection errors."""
     pass
 
-
 class MongoDBConnector:
     _instance = None
+    _lock = threading.Lock()  # Lock object to ensure thread safety
 
     def __new__(cls, *args, **kwargs):
-        if cls._instance is None:
-            cls._instance = super(MongoDBConnector, cls).__new__(cls)
+        with cls._lock:  # Ensure that only one thread at a time can create the instance
+            if cls._instance is None:
+                cls._instance = super(MongoDBConnector, cls).__new__(cls)
         return cls._instance
 
     def __init__(self, host, port, user, password, db_name, auth_source=None, ssl=False, ssl_ca=None):
@@ -392,7 +394,7 @@ class MongoDBConnector:
             missing_credentials.append("password")
         if not self.port:
             missing_credentials.append("port")
-        
+
         if missing_credentials:
             raise MongoDBConnectionError(f"Missing MongoDB credentials: {', '.join(missing_credentials)}")
 
@@ -401,7 +403,7 @@ class MongoDBConnector:
         try:
             # Build the MongoDB URI
             connection_uri = f"mongodb://{self.user}:{self.password}@{self.host}:{self.port}/{self.db_name}"
-            
+
             # Add authSource if provided
             if self.auth_source:
                 connection_uri += f"?authSource={self.auth_source}"
@@ -427,6 +429,8 @@ class MongoDBConnector:
 
     def get_connection(self):
         """Returns the active MongoDB connection."""
+        if self.client is None:
+            raise MongoDBConnectionError("MongoDB connection is not established.")
         return self.db
 
     def close_connection(self):
@@ -437,122 +441,72 @@ class MongoDBConnector:
             return True
         return False
 
+    def list_databases(self):
+        """Lists all databases in the MongoDB instance."""
+        return self.client.list_database_names()
 
-class DataReader:
-    """
-    Class to read data from Excel and PostgreSQL.
+    def list_collections(self, db_name=None):
+        """Lists all collections in the specified database. If no database is provided, it uses the current database."""
+        db = self.client[db_name] if db_name else self.db
+        return db.list_collection_names()
 
-    Attributes:
-        file_path (str): Path to the Excel file.
-        sheet_name (str): Name of the sheet to read.
-        query (str): SQL query to execute for PostgreSQL.
-    """
 
-    def __init__(self, file_path=None, sheet_name=None, query=None, params=None):
-        """Initializes DataReader with optional file path, sheet name, and SQL query."""
-        self.file_path = file_path
-        self.sheet_name = sheet_name
-        self.query = query
-        self.params = params or ()  # Default to empty tuple if no params
-        self.data = None  # To store the result of the query
+class MongoDBDataReader:
+    def __init__(self, db_connector: MongoDBConnector, collection_name: str):
+        """Initializes the MongoDBDataReader with a MongoDBConnector instance and the collection name."""
+        self.db_connector = db_connector
+        self.collection_name = collection_name
+        self.collection = self._get_collection()
 
-    
-    def read_excel(self):
+    def _get_collection(self):
+        """Fetches the specified collection from the database."""
+        if not self.db_connector or not self.collection_name:
+            raise ValueError("Invalid database connector or collection name.")
+        return self.db_connector.get_connection()[self.collection_name]
+
+    def find_one(self, query: dict = None):
+        """Finds a single document in the collection based on the provided query."""
+        if query is None:
+            query = {}
+        return self.collection.find_one(query)
+
+    def find_all(self, query: dict = None, limit: int = 0):
+        """Finds multiple documents in the collection based on the provided query."""
+        if query is None:
+            query = {}
+        return self.collection.find(query).limit(limit)
+
+    def count_documents(self, query: dict = None):
+        """Returns the count of documents in the collection based on the provided query."""
+        if query is None:
+            query = {}
+        return self.collection.count_documents(query)
+
+    def find_by_id(self, document_id):
+        """Finds a single document by its _id."""
+        query = {"_id": document_id}
+        return self.collection.find_one(query)
+
+    def find_with_optional_filters(self, filter_criteria: dict, limit: int = 0):
         """
-        Reads the Excel file into a Pandas DataFrame.
-        
-        Returns:
-            pd.DataFrame: DataFrame containing the data from the Excel file.
+        Finds documents based on optional filter criteria.
+        Any filter with a value of None will be ignored.
         """
-        if self.file_path and self.sheet_name:
-            self.data = pd.read_excel(self.file_path, sheet_name=self.sheet_name)
-        else:
-            raise ValueError("Both file_path and sheet_name must be provided.")
-        return self.data
+        query = {key: value for key, value in filter_criteria.items() if value is not None}
+        return self.collection.find(query).limit(limit)
 
-    
-    def read_postgresql(self, pg_connector):
-        """
-        Reads data from PostgreSQL using a given PostgreSQLConnector and stores the data.
-        Uses parameterized queries to avoid SQL injection.
-        
-        Parameters:
-        - pg_connector (PostgreSQLConnector): An instance of PostgreSQLConnector to manage the connection.
-        
-        Returns:
-        - List of tuples: The query result.
-        """
-        if not self.query:
-            raise ValueError("SQL query must be provided.")
-        
-        conn = pg_connector.get_connection()
+    def list_databases(self):
+        """Lists all databases in the MongoDB instance."""
+        return self.db_connector.list_databases()
 
-        # Use a context manager to ensure the connection and cursor are properly closed
-        with conn.cursor() as cursor:
-            try:
-                # Use parameterized queries to avoid SQL injection
-                cursor.execute(self.query, self.params)
-                self.data = cursor.fetchall()  # Fetch the data and store it in an instance variable
-            except psycopg2.Error as e:
-                raise PostgreSQLConnectionError(f"Failed to execute query: {str(e)}")
-            finally:
-                # Close the connection after the query execution
-                pg_connector.close_connection()
-        
-        return self.data  # Return the data for immediate use
+    def list_collections(self, db_name=None):
+        """Lists all collections in the specified database. If no database is provided, it uses the current database."""
+        return self.db_connector.list_collections(db_name)
 
-    
-    def read_mysql(self, mysql_connector):
-        """
-        Reads data from MySQL using a given MySQLConnector and stores the data.
-        Uses parameterized queries to avoid SQL injection.
+    def close(self):
+        """Closes the MongoDB connection via the MongoDBConnector."""
+        return self.db_connector.close_connection()
         
-        Parameters:
-        - mysql_connector (MySQLConnector): An instance of MySQLConnector to manage the connection.
-        
-        Returns:
-        - List of tuples: The query result.
-        """
-        conn = mysql_connector.get_connection()
-
-        try:
-            cursor = conn.cursor()
-            cursor.execute(self.query, self.params)
-            self.data = cursor.fetchall()  # Fetch the data and store it in an instance variable
-        except Error as e:
-            raise Exception(f"Failed to execute query: {str(e)}")
-        finally:
-            # Close the connection after the query execution
-            mysql_connector.close_connection()
-        
-        return self.data  # Return the data for immediate use
-        
-        
-    def read_sqlserver(self, sqlserver_connector):
-        """
-        Reads data from SQL Server using a given SQLServerConnector and stores the data.
-        Uses parameterized queries to avoid SQL injection.
-        
-        Parameters:
-        - sqlserver_connector (SQLServerConnector): An instance of SQLServerConnector to manage the connection.
-        
-        Returns:
-        - List of tuples: The query result.
-        """
-        conn = sqlserver_connector.get_connection()
-
-        try:
-            cursor = conn.cursor()
-            cursor.execute(self.query, self.params)
-            self.data = cursor.fetchall()  # Fetch the data and store it in an instance variable
-        except pymssql.Error as e:
-            raise Exception(f"Failed to execute query: {str(e)}")
-        finally:
-            # Close the connection after the query execution
-            sqlserver_connector.close_connection()
-        
-        return self.data  # Return the data for immediate use
-
 
 class DataProfiling:
     """
