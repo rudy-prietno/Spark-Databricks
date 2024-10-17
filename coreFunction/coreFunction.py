@@ -246,16 +246,25 @@ class MySQLConnector:
         return False
         
 
-@singleton
+class SQLServerConnectionError(Exception):
+    """Custom exception for SQL Server connection errors."""
+    pass
+
 class SQLServerConnector:
     """
-    Singleton class to handle SQL Server connections using pymssql.
-    Ensures only one instance of the connection is used throughout the application lifecycle.
+    Singleton class to handle SQL Server connections.
+    Ensures only one instance of the connection throughout the application lifecycle.
     """
+    _instance = None
 
-    def __init__(self, host, db, user, password, port=1433):
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super(SQLServerConnector, cls).__new__(cls)
+        return cls._instance
+
+    def __init__(self, host, db, user, password, port=1433, ssl_ca=None, ssl_cert=None, ssl_key=None):
         """
-        Initializes the SQLServerConnector with the necessary credentials.
+        Initializes the SQLServerConnector with the necessary credentials and optional SSL configuration.
         """
         self.conn = None
         self.host = host
@@ -263,6 +272,9 @@ class SQLServerConnector:
         self.user = user
         self.password = password
         self.port = port
+        self.ssl_ca = ssl_ca
+        self.ssl_cert = ssl_cert
+        self.ssl_key = ssl_key
         self._validate_credentials()
         self._create_connection()
 
@@ -270,36 +282,67 @@ class SQLServerConnector:
         """
         Validates the necessary SQL Server credentials.
         Raises:
-            ValueError: If any required credentials are missing.
+            SQLServerConnectionError: If any required credentials are missing.
         """
-        if not self.host or not self.db or not self.user or not self.password or not self.port:
-            raise ValueError("One or more SQL Server credentials are missing.")
+        missing_credentials = []
+        
+        if not self.host:
+            missing_credentials.append("host")
+        if not self.db:
+            missing_credentials.append("db")
+        if not self.user:
+            missing_credentials.append("user")
+        if not self.password:
+            missing_credentials.append("password")
+        if not self.port:
+            missing_credentials.append("port")
+        
+        if missing_credentials:
+            raise SQLServerConnectionError(f"Missing SQL Server credentials: {', '.join(missing_credentials)}")
 
     def _create_connection(self):
         """
-        Establishes the SQL Server connection using pymssql.
+        Establishes the SQL Server connection using pymssql, with optional SSL configuration.
         """
         try:
-            self.conn = pymssql.connect(
-                server=self.host,
-                user=self.user,
-                password=self.password,
-                database=self.db,
-                port=self.port
-            )
+            connection_params = {
+                'server': self.host,
+                'database': self.db,
+                'user': self.user,
+                'password': self.password,
+                'port': self.port
+            }
+
+            if self.ssl_ca:
+                connection_params['ssl_ca'] = self.ssl_ca
+            if self.ssl_cert:
+                connection_params['ssl_cert'] = self.ssl_cert
+            if self.ssl_key:
+                connection_params['ssl_key'] = self.ssl_key
+
+            self.conn = pymssql.connect(**connection_params)
             print("Successfully connected to SQL Server")
         except pymssql.Error as e:
-            raise Exception(f"Error connecting to SQL Server: {str(e)}")
+            raise SQLServerConnectionError(f"Error connecting to SQL Server: {str(e)}")
 
     def get_connection(self):
         """Returns the active SQL Server connection."""
         return self.conn
+
+    def get_connection_id(self):
+        """Returns the SQL Server connection's session ID."""
+        with self.conn.cursor() as cursor:
+            cursor.execute("SELECT @@SPID")
+            connection_id = cursor.fetchone()[0]
+        return connection_id
 
     def close_connection(self):
         """Closes the SQL Server connection."""
         if self.conn:
             self.conn.close()
             print("SQL Server connection closed")
+            return True
+        return False
             
 
 class DataReader:
