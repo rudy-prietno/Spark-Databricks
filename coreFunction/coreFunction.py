@@ -80,12 +80,25 @@ class PostgreSQLConnector:
 
     def _validate_credentials(self):
         """
-        Validates the necessary PostgreSQL credentials.
+        Validates the necessary PostgreSQL credentials and specifies which ones are missing.
         Raises:
-            PostgreSQLConnectionError: If any required credentials are missing.
+            PostgreSQLConnectionError: If any required credentials are missing, with specific message.
         """
-        if not self.host or not self.db or not self.user or not self.password or not self.port:
-            raise PostgreSQLConnectionError("One or more PostgreSQL credentials are missing.")
+        missing_credentials = []
+        
+        if not self.host:
+            missing_credentials.append("host")
+        if not self.db:
+            missing_credentials.append("db")
+        if not self.user:
+            missing_credentials.append("user")
+        if not self.password:
+            missing_credentials.append("password")
+        if not self.port:
+            missing_credentials.append("port")
+        
+        if missing_credentials:
+            raise PostgreSQLConnectionError(f"Missing PostgreSQL credentials: {', '.join(missing_credentials)}")
 
     def _create_connection(self):
         """
@@ -107,6 +120,13 @@ class PostgreSQLConnector:
     def get_connection(self):
         """Returns the active PostgreSQL connection."""
         return self.conn
+
+    def get_connection_id(self):
+        """Returns the PostgreSQL connection's backend process ID."""
+        with self.conn.cursor() as cursor:
+            cursor.execute("SELECT pg_backend_pid()")
+            connection_id = cursor.fetchone()[0]
+        return connection_id
 
     def close_connection(self):
         """Closes the PostgreSQL connection."""
