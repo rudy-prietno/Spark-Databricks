@@ -9,6 +9,9 @@ from mysql.connector import Error
 
 import pymssql
 
+import pymongo
+from pymongo.errors import ConnectionFailure
+
 from delta.tables import DeltaTable
 from pyspark.sql import SparkSession
 from pyspark.sql.window import Window
@@ -343,7 +346,97 @@ class SQLServerConnector:
             print("SQL Server connection closed")
             return True
         return False
+
+
+# MongoDBConnector class
+class MongoDBConnectionError(Exception):
+    """Custom exception for MongoDB connection errors."""
+    pass
+
+
+class MongoDBConnector:
+    _instance = None
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super(MongoDBConnector, cls).__new__(cls)
+        return cls._instance
+
+    def __init__(self, host, port, user, password, db_name, auth_source=None, ssl=False, ssl_ca=None):
+        # Prevent reinitialization
+        if not hasattr(self, '_initialized'):
+            self.host = host
+            self.port = port
+            self.user = user
+            self.password = password
+            self.db_name = db_name
+            self.auth_source = auth_source
+            self.ssl = ssl
+            self.ssl_ca = ssl_ca
+            self.client = None
+            self.db = None
+            self._validate_credentials()
+            self._create_connection()
+            self._initialized = True
+
+    def _validate_credentials(self):
+        """Validates the necessary MongoDB credentials."""
+        missing_credentials = []
+        if not self.host:
+            missing_credentials.append("host")
+        if not self.db_name:
+            missing_credentials.append("db_name")
+        if not self.user:
+            missing_credentials.append("user")
+        if not self.password:
+            missing_credentials.append("password")
+        if not self.port:
+            missing_credentials.append("port")
+        
+        if missing_credentials:
+            raise MongoDBConnectionError(f"Missing MongoDB credentials: {', '.join(missing_credentials)}")
+
+    def _create_connection(self):
+        """Establishes the MongoDB connection using pymongo."""
+        try:
+            # Build the MongoDB URI
+            connection_uri = f"mongodb://{self.user}:{self.password}@{self.host}:{self.port}/{self.db_name}"
             
+            # Add authSource if provided
+            if self.auth_source:
+                connection_uri += f"?authSource={self.auth_source}"
+
+            # Connection parameters
+            connection_params = {
+                'host': connection_uri,
+                'ssl': self.ssl
+            }
+
+            if self.ssl_ca:
+                connection_params['tlsCAFile'] = self.ssl_ca
+
+            # Create the MongoDB client
+            self.client = pymongo.MongoClient(**connection_params)
+            self.db = self.client[self.db_name]
+
+            # Test the connection
+            self.client.admin.command('ping')
+            print("Successfully connected to MongoDB")
+        except ConnectionFailure as e:
+            raise MongoDBConnectionError(f"Error connecting to MongoDB: {str(e)}")
+
+    def get_connection(self):
+        """Returns the active MongoDB connection."""
+        return self.db
+
+    def close_connection(self):
+        """Closes the MongoDB connection."""
+        if self.client:
+            self.client.close()
+            print("MongoDB connection closed")
+            return True
+        return False
+
 
 class DataReader:
     """
