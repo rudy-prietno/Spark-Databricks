@@ -2,8 +2,6 @@
 import os
 import pandas as pd
 
-from singleton_decorator import singleton
-
 import psycopg2
 
 import mysql.connector
@@ -144,16 +142,25 @@ class PostgreSQLConnector:
         return False
         
 
-@singleton
+class MySQLConnectionError(Exception):
+    """Custom exception for MySQL connection errors."""
+    pass
+
 class MySQLConnector:
     """
     Singleton class to handle MySQL connections.
-    Ensures only one instance of the connection is used throughout the application lifecycle.
+    Ensures only one instance of the connection throughout the application lifecycle.
     """
-    
-    def __init__(self, host, db, user, password, port=3306):
+    _instance = None
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super(MySQLConnector, cls).__new__(cls)
+        return cls._instance
+
+    def __init__(self, host, db, user, password, port=3306, ssl_ca=None, ssl_cert=None, ssl_key=None):
         """
-        Initializes the MySQLConnector with the necessary credentials.
+        Initializes the MySQLConnector with the necessary credentials and optional SSL configuration.
         """
         self.conn = None
         self.host = host
@@ -161,6 +168,9 @@ class MySQLConnector:
         self.user = user
         self.password = password
         self.port = port
+        self.ssl_ca = ssl_ca
+        self.ssl_cert = ssl_cert
+        self.ssl_key = ssl_key
         self._validate_credentials()
         self._create_connection()
 
@@ -168,38 +178,73 @@ class MySQLConnector:
         """
         Validates the necessary MySQL credentials.
         Raises:
-            ValueError: If any required credentials are missing.
+            MySQLConnectionError: If any required credentials are missing.
         """
-        if not self.host or not self.db or not self.user or not self.password or not self.port:
-            raise ValueError("One or more MySQL credentials are missing.")
+        missing_credentials = []
+        
+        if not self.host:
+            missing_credentials.append("host")
+        if not self.db:
+            missing_credentials.append("db")
+        if not self.user:
+            missing_credentials.append("user")
+        if not self.password:
+            missing_credentials.append("password")
+        if not self.port:
+            missing_credentials.append("port")
+        
+        if missing_credentials:
+            raise MySQLConnectionError(f"Missing MySQL credentials: {', '.join(missing_credentials)}")
 
     def _create_connection(self):
         """
-        Establishes the MySQL connection using mysql.connector.
+        Establishes the MySQL connection using mysql.connector, with optional SSL configuration.
         """
         try:
-            self.conn = mysql.connector.connect(
-                host=self.host,
-                database=self.db,
-                user=self.user,
-                password=self.password,
-                port=self.port
-            )
+            connection_params = {
+                'host': self.host,
+                'database': self.db,
+                'user': self.user,
+                'password': self.password,
+                'port': self.port
+            }
+
+            # Add SSL parameters if provided
+            if self.ssl_ca and self.ssl_cert and self.ssl_key:
+                connection_params['ssl_ca'] = self.ssl_ca
+                connection_params['ssl_cert'] = self.ssl_cert
+                connection_params['ssl_key'] = self.ssl_key
+
+            self.conn = mysql.connector.connect(**connection_params)
+
             if self.conn.is_connected():
                 print("Successfully connected to MySQL")
         except Error as e:
-            raise Exception(f"Error connecting to MySQL: {str(e)}")
+            raise MySQLConnectionError(f"Error connecting to MySQL: {str(e)}")
 
     def get_connection(self):
         """Returns the active MySQL connection."""
         return self.conn
+
+    def get_connection_id(self):
+        """Returns the MySQL connection's backend process ID."""
+        if self.conn.is_connected():
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT CONNECTION_ID()")
+            connection_id = cursor.fetchone()[0]
+            cursor.close()
+            return connection_id
+        else:
+            raise MySQLConnectionError("Connection is closed")
 
     def close_connection(self):
         """Closes the MySQL connection."""
         if self.conn and self.conn.is_connected():
             self.conn.close()
             print("MySQL connection closed")
-
+            return True
+        return False
+        
 
 @singleton
 class SQLServerConnector:
