@@ -57,12 +57,17 @@ class PostgreSQLConnectionError(Exception):
     """Custom exception for PostgreSQL connection errors."""
     pass
 
-@singleton
 class PostgreSQLConnector:
     """
     Singleton class to handle PostgreSQL connections.
     Ensures only one instance of the connection throughout the application lifecycle.
     """
+    _instance = None
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super(PostgreSQLConnector, cls).__new__(cls)
+        return cls._instance
 
     def __init__(self, host, db, user, password, port, sslmode=None):
         """
@@ -123,16 +128,21 @@ class PostgreSQLConnector:
 
     def get_connection_id(self):
         """Returns the PostgreSQL connection's backend process ID."""
-        with self.conn.cursor() as cursor:
-            cursor.execute("SELECT pg_backend_pid()")
-            connection_id = cursor.fetchone()[0]
-        return connection_id
+        if self.conn.closed == 0:  # Check if the connection is open
+            with self.conn.cursor() as cursor:
+                cursor.execute("SELECT pg_backend_pid()")
+                connection_id = cursor.fetchone()[0]
+            return connection_id
+        else:
+            raise PostgreSQLConnectionError("Connection is closed")
 
     def close_connection(self):
         """Closes the PostgreSQL connection."""
         if self.conn:
             self.conn.close()
-
+            return True
+        return False
+        
 
 @singleton
 class MySQLConnector:
