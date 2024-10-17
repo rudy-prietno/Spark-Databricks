@@ -64,7 +64,7 @@ class PostgreSQLConnector:
     Ensures only one instance of the connection throughout the application lifecycle.
     """
 
-    def __init__(self, host, db, user, password, port, sslmode="require"):
+    def __init__(self, host, db, user, password, port, sslmode=None):
         """
         Initializes the PostgreSQLConnector with the necessary credentials and SSL mode.
         """
