@@ -14,8 +14,11 @@ from bson import ObjectId
 import pymongo
 from pymongo.errors import ConnectionFailure
 
+from pyspark.sql import SparkSession, Row
+from pyspark.sql.types import StructType
+from pyspark.sql import DataFrame
+
 from delta.tables import DeltaTable
-from pyspark.sql import SparkSession
 from pyspark.sql.window import Window
 from pyspark.sql import functions as F
 
@@ -518,6 +521,50 @@ class MongoDBDataReader:
         """Closes the MongoDB connection via the MongoDBConnector."""
         return self.db_connector.close_connection()
 
+
+class MongoToSpark:
+    def __init__(self, spark_session):
+        """
+        Initializes the MongoToSpark class.
+        
+        :param spark_session: An active Spark session.
+        """
+        self.spark = spark_session
+
+    def query_to_rdd(self, documents):
+        """
+        Converts MongoDB query results to a Spark RDD.
+        
+        :param documents: List of MongoDB documents.
+        :return: A Spark RDD containing the documents from MongoDB.
+        """
+        # Preprocess documents to convert _id to string
+        processed_docs = []
+        for doc in documents:
+            if '_id' in doc:
+                doc['_id'] = str(doc['_id'])  # Convert ObjectId to string
+            processed_docs.append(doc)
+
+        # Convert documents to RDD
+        rdd = self.spark.sparkContext.parallelize(processed_docs)
+        return rdd
+
+    def rdd_to_dataframe(self, rdd, schema: StructType = None):
+        """
+        Converts an RDD to a Spark DataFrame with an optional schema.
+        
+        :param rdd: The Spark RDD.
+        :param schema: Optional schema for the DataFrame (StructType). If not provided, Spark will infer the schema.
+        :return: A PySpark DataFrame.
+        """
+        if schema:
+            # Create DataFrame with a predefined schema
+            df = self.spark.createDataFrame(rdd.map(lambda doc: Row(**doc)), schema)
+        else:
+            # Infer schema automatically
+            df = self.spark.createDataFrame(rdd.map(lambda doc: Row(**doc)))
+        
+        return df
         
 
 class DataProfiling:
