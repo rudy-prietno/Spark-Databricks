@@ -10,6 +10,7 @@ from mysql.connector import Error
 import pymssql
 
 import threading
+from bson import ObjectId
 import pymongo
 from pymongo.errors import ConnectionFailure
 
@@ -464,17 +465,23 @@ class MongoDBDataReader:
             raise ValueError("Invalid database connector or collection name.")
         return self.db_connector.get_connection()[self.collection_name]
 
-    def find_one(self, query: dict = None):
-        """Finds a single document in the collection based on the provided query."""
+    def find_one(self, query: dict = None, projection: dict = None):
+        """
+        Finds a single document in the collection based on the provided query.
+        Supports projection to include/exclude fields.
+        """
         if query is None:
             query = {}
-        return self.collection.find_one(query)
+        return self.collection.find_one(query, projection)
 
-    def find_all(self, query: dict = None, limit: int = 0):
-        """Finds multiple documents in the collection based on the provided query."""
+    def find_all(self, query: dict = None, projection: dict = None, limit: int = 0):
+        """
+        Finds multiple documents in the collection based on the provided query.
+        Supports projection to include/exclude fields.
+        """
         if query is None:
             query = {}
-        return self.collection.find(query).limit(limit)
+        return self.collection.find(query, projection).limit(limit)
 
     def count_documents(self, query: dict = None):
         """Returns the count of documents in the collection based on the provided query."""
@@ -482,18 +489,22 @@ class MongoDBDataReader:
             query = {}
         return self.collection.count_documents(query)
 
-    def find_by_id(self, document_id):
-        """Finds a single document by its _id."""
-        query = {"_id": document_id}
-        return self.collection.find_one(query)
+    def find_by_id(self, document_id, projection: dict = None):
+        """
+        Finds a single document by its _id.
+        Supports projection to include/exclude fields.
+        """
+        query = {"_id": ObjectId(document_id)}
+        return self.collection.find_one(query, projection)
 
-    def find_with_optional_filters(self, filter_criteria: dict, limit: int = 0):
+    def find_with_optional_filters(self, filter_criteria: dict, projection: dict = None, limit: int = 0):
         """
         Finds documents based on optional filter criteria.
         Any filter with a value of None will be ignored.
+        Supports projection to include/exclude fields.
         """
         query = {key: value for key, value in filter_criteria.items() if value is not None}
-        return self.collection.find(query).limit(limit)
+        return self.collection.find(query, projection).limit(limit)
 
     def list_databases(self):
         """Lists all databases in the MongoDB instance."""
@@ -506,6 +517,7 @@ class MongoDBDataReader:
     def close(self):
         """Closes the MongoDB connection via the MongoDBConnector."""
         return self.db_connector.close_connection()
+
         
 
 class DataProfiling:
