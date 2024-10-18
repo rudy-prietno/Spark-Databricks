@@ -653,7 +653,8 @@ class DataProfiling:
     
 
 class DataIngestion:
-    
+
+    @staticmethod
     def DeltaTables(tableName, dataFrameSource, primaryKey=None):
         """
         Ingests data into a Delta table using the provided DataFrame and primary key for merging.
@@ -670,15 +671,13 @@ class DataIngestion:
         spark.conf.set("spark.databricks.delta.optimizeWrite.enabled", "true")
         spark.conf.set("spark.databricks.delta.merge.optimizeInsertDelete.enabled", "true")
         spark.conf.set("spark.databricks.delta.autoCompact.enabled", "true")
-
-        # Allow schema evolution during merge operations
         spark.conf.set("spark.databricks.delta.schema.autoMerge.enabled", "true")
 
         try:
             # Check if Delta table exists
             deltaTable = DeltaTable.forName(spark, tableName)
             print(f"{tableName} is a Delta table.")
-            
+
             if primaryKey:
                 # Check if primaryKey is unique in the source DataFrame
                 distinct_count = dataFrameSource.select(primaryKey).distinct().count()
@@ -700,7 +699,6 @@ class DataIngestion:
 
                     print(f"Number of rows updated: {update_count}")
                     print(f"Number of rows inserted: {insert_count}")
-
                 else:
                     # If primary key is not unique, do append-only
                     print(f"Primary key {primaryKey} is not unique. Appending data to {tableName}.")
@@ -725,7 +723,8 @@ class DataIngestion:
             print(f"{row_count} rows written to {tableName}.")
 
 
-    def DeltaTablesPartition (queries, tableName, partitionKeys, orderKeys, partitionColumns, partitionColumnSecondary):
+    @staticmethod
+    def DeltaTablesPartition(queries, tableName, partitionKeys, orderKeys, partitionColumns, partitionColumnSecondary):
         """
         Ingests data into a Delta table, partitioning by specified columns, and handles merging or creating a new table if not found.
 
@@ -743,11 +742,9 @@ class DataIngestion:
         spark.conf.set("spark.databricks.delta.optimizeWrite.enabled", "true")
         spark.conf.set("spark.databricks.delta.merge.optimizeInsertDelete.enabled", "true")
         spark.conf.set("spark.databricks.delta.autoCompact.enabled", "true")
-        
-        # Allow schema evolution during merge operations
         spark.conf.set("spark.databricks.delta.schema.autoMerge.enabled", "true")
 
-        # Standard timestamp write on dataframe
+        # Timestamp handling settings
         spark.conf.set("spark.sql.parquet.int96RebaseModeInRead", "CORRECTED")
         spark.conf.set("spark.sql.parquet.int96RebaseModeInWrite", "CORRECTED")
         spark.conf.set("spark.sql.parquet.datetimeRebaseModeInRead", "CORRECTED")
@@ -756,7 +753,7 @@ class DataIngestion:
         # Execute the provided SQL query to get the source DataFrame
         rsDf = spark.sql(queries)
 
-        # Create a WindowSpec with multiple partition and order columns
+        # Create a WindowSpec with partition and order columns
         windowSpec = Window.partitionBy([F.col(c) for c in partitionKeys])\
                         .orderBy([F.col(c).desc() for c in orderKeys])
 
@@ -772,7 +769,7 @@ class DataIngestion:
             dfF1 = df_source.withColumn(
                 f'{partitionColumns}_Partition', 
                 F.coalesce(F.to_date(F.col(f'{partitionColumns}')), F.to_date(F.col(f'{partitionColumnSecondary}')))
-                )
+            )
             
             # Perform the merge operation
             print("Starting merge into Delta table.")
@@ -808,191 +805,7 @@ class DataIngestion:
                 .saveAsTable(f'{tableName}')
             
             row_count = dfF.count()
-            print(f"{row_count} rows written to {tableName}")
-
-
-    def checkPartitionDelta (pathTable):
-        """
-        Checks the partitions of a Delta table, providing details about the number of files and the total size of each partition.
-
-        Parameters:
-        - pathTable (str): The path to the Delta table to be inspected.
-
-        """
-        
-        try:
-            # Use the DeltaTable class to access the Delta table
-            delta_table_path = f'{pathTable}'
-            table_name = delta_table_path.rstrip('/').split('/')[-1]
-            print("Table Name:", table_name)
-
-            # Load the Delta table
-            deltaTable = DeltaTable.forPath(spark, delta_table_path)
-
-            # Describe partitions for Delta table
-            partition_info = spark.sql(f"DESCRIBE DETAIL '{delta_table_path}'").select('partitionColumns').collect()[0][0]
-
-            if not partition_info:
-                print("No partitions found in this Delta table.")
-                return
-
-            print(f"Partition columns: {partition_info}")
-
-            # Get partition details
-            df = spark.read.format("delta").load(delta_table_path)
-            partitions_df = df.groupBy(partition_info).count()
-
-            # Collect partition details and show the partition counts
-            partitions_df.show(truncate=False)
-
-            # Get file size and count of files in partitions
-            partition_details = {}
-
-            files_in_partition = dbutils.fs.ls(delta_table_path)
-            for file in files_in_partition:
-                if file.isDir():
-                    partition_name = file.name
-                    partition_path = file.path
-
-                    files = dbutils.fs.ls(partition_path)
-                    total_size = sum(f.size for f in files if not f.isDir())
-                    file_count = len([f for f in files if not f.isDir()])
-                    
-                    partition_details[partition_name] = {
-                        "size_bytes": total_size,
-                        "file_count": file_count
-                    }
-
-            for partition_name, details in partition_details.items():
-                print(f"Partition: {partition_name}, Size: {details['size_bytes']} bytes, Number of files: {details['file_count']}")
-        
-        except Exception as e:
-            print(f"Delta table partition not found or error occurred: {str(e)}")
-
-
-    def get_total_storage_size(path):
-        """
-        Calculates the total storage size of all files in the given path.
-
-        Parameters:
-        - path (str): The file system path to calculate the total size.
-
-        Returns:
-        - total_size (int): The total size of all files in the directory, in bytes.
-        """
-
-        total_size = 0
-        files = dbutils.fs.ls(path)
-        for file in files:
-            total_size += file.size
-        return total_size
-    
-
-    def maintenanceDelta(pathTable):
-        """
-        Performs maintenance on a Delta table by running the VACUUM command and measuring storage size.
-
-        Parameters:
-        - pathTable (str): Path to the Delta table to be maintained.
-        
-        """
-
-        delta_table_path = pathTable
-
-        # Measure total storage before VACUUM
-        storage_before_vacuum = get_total_storage_size(delta_table_path)
-        print(f"Total storage before VACUUM: {storage_before_vacuum / (1024 * 1024):.2f} MB")
-
-        # Run the VACUUM command
-        deltaTable = DeltaTable.forPath(spark, delta_table_path)  # Use DeltaTable to reference the Delta table
-        deltaTable.vacuum(retentionHours=168)  # 168 hours = 7 days, VACUUM to remove old data files
-
-        # Measure total storage after VACUUM
-        storage_after_vacuum = get_total_storage_size(delta_table_path)
-        print(f"Total storage after VACUUM: {storage_after_vacuum / (1024 * 1024):.2f} MB")
-
-        # Calculate the difference in storage
-        storage_reduction = (storage_before_vacuum - storage_after_vacuum) / (1024 * 1024)
-        print(f"Storage reduced by: {storage_reduction:.2f} MB")
-
-
-    def optimizeDelta(pathTable, queries, optimize_sql):
-        """
-        Optimizes a Delta table using VOrder combined with ZOrder and measures query performance before and after.
-        
-        Parameters:
-        - pathTable (str): Path to the Delta table.
-        - queries (str): SQL query to execute before and after optimization.
-        - optimize_sql (str): SQL query to perform the Delta table optimization (e.g., OPTIMIZE ... ZORDER BY ...).
-        
-        """
-
-        # Path and table details
-        delta_table_path = pathTable
-        table_name = delta_table_path.rstrip('/').split('/')[-1]
-
-        print(f'Optimization Process for Table: {table_name}')
-
-        # Describe details before optimization
-        print("Before Optimization:")
-        before_optimization = spark.sql(f"DESCRIBE DETAIL delta.`{delta_table_path}`")
-        before_optimization.show(truncate=False)
-
-        # Run a query before optimization and measure the time
-        utc_now = datetime.now(timezone.utc)
-        local_time_before = utc_now.astimezone(timezone(timedelta(hours=7)))  # Convert UTC to WIB (UTC+7)
-        print(f"Query started at (WIB): {local_time_before.strftime('%Y-%m-%d %H:%M:%S')}")
-
-        start_time = time.time()
-        query_result_before = spark.sql(queries)
-        query_result_before.show()  # Show the query result (optional)
-        query_time_before = time.time() - start_time
-
-        utc_now_after = datetime.now(timezone.utc)
-        local_time_after = utc_now_after.astimezone(timezone(timedelta(hours=7)))  # Convert UTC to WIB (UTC+7)
-        print(f"Query finished at (WIB): {local_time_after.strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"Query execution time before optimization: {query_time_before} seconds")
-
-        # Perform optimization
-        print("\nRunning OPTIMIZE command:")
-        spark.sql(optimize_sql)
-
-        # Describe details after optimization
-        print("\nAfter Optimization:")
-        after_optimization = spark.sql(f"DESCRIBE DETAIL delta.`{delta_table_path}`")
-        after_optimization.show(truncate=False)
-
-        # Run the same query after optimization and measure the time
-        utc_now = datetime.now(timezone.utc)
-        local_time_before = utc_now.astimezone(timezone(timedelta(hours=7)))  # Convert UTC to WIB (UTC+7)
-        print(f"Query started at (WIB): {local_time_before.strftime('%Y-%m-%d %H:%M:%S')}")
-
-        start_time = time.time()
-        query_result_after = spark.sql(queries)
-        query_result_after.show()  # Show the query result (optional)
-        query_time_after = time.time() - start_time
-
-        utc_now_after = datetime.now(timezone.utc)
-        local_time_after = utc_now_after.astimezone(timezone(timedelta(hours=7)))  # Convert UTC to WIB (UTC+7)
-        print(f"Query finished at (WIB): {local_time_after.strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"Query execution time after optimization: {query_time_after} seconds")
-
-        # Compare the number of files and data size before and after optimization
-        print("\nSummary of Optimization:")
-        
-        before_files = before_optimization.select("numFiles").collect()[0][0]
-        after_files = after_optimization.select("numFiles").collect()[0][0]
-        print(f"Number of files before optimization: {before_files}")
-        print(f"Number of files after optimization: {after_files}")
-
-        before_size = before_optimization.select("sizeInBytes").collect()[0][0]
-        after_size = after_optimization.select("sizeInBytes").collect()[0][0]
-        print(f"Data size before optimization: {before_size / (1024 * 1024):.2f} MB")
-        print(f"Data size after optimization: {after_size / (1024 * 1024):.2f} MB")
-        
-        # Calculate and print the time saved
-        time_saved = query_time_before - query_time_after
-        print(f"Time saved after optimization: {time_saved:.4f} seconds ({(time_saved / query_time_before) * 100:.2f}% reduction)")
+            print(f"{row_count} rows written to {tableName}.")
         
 
 class dataQuality:
